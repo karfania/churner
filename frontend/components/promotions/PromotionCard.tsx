@@ -2,8 +2,9 @@
 
 import { Promotion } from "@/types";
 import { cn } from "@/lib/utils";
-import { ExternalLink, Info, DollarSign, Calendar } from "lucide-react";
+import { ExternalLink, Info, DollarSign, Calendar, Bookmark } from "lucide-react";
 import { useState } from "react";
+import { useBookmarks } from "@/hooks/useBookmarks";
 import { motion, AnimatePresence } from "framer-motion";
 
 interface PromotionCardProps {
@@ -12,6 +13,7 @@ interface PromotionCardProps {
 
 export function PromotionCard({ promotion }: PromotionCardProps) {
     const [showDetails, setShowDetails] = useState(false);
+    const { isBookmarked, toggleBookmark } = useBookmarks();
 
     const getScoreColor = (score: number) => {
         if (score >= 80) return "text-emerald-600 bg-emerald-50 border-emerald-200";
@@ -24,7 +26,16 @@ export function PromotionCard({ promotion }: PromotionCardProps) {
             layout
             className="group relative bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-md transition-all duration-300 overflow-hidden"
         >
-            <div className="p-6">
+                <div className="p-6">
+                    <div className="absolute top-3 right-3">
+                        <button
+                            onClick={() => toggleBookmark(promotion)}
+                            aria-label={isBookmarked(promotion.id) ? "Remove bookmark" : "Save bookmark"}
+                            className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-white border border-gray-200 shadow-sm hover:scale-105 transition-transform"
+                        >
+                            <Bookmark className={isBookmarked(promotion.id) ? "w-4 h-4 text-blue-600" : "w-4 h-4 text-gray-400"} />
+                        </button>
+                    </div>
                 <div className="flex justify-between items-start mb-4">
                     <div>
                         <div className="flex items-center gap-2 mb-1">

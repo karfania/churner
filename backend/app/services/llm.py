@@ -52,7 +52,15 @@ class OllamaService:
                 )
                 response.raise_for_status()
                 result = response.json()
-                return json.loads(result["response"])
+                parsed = json.loads(result["response"])
+                
+                # Handle case where LLM returns a list of objects instead of a single object
+                if isinstance(parsed, list):
+                    if parsed:
+                        return parsed[0]
+                    return None
+                    
+                return parsed
             except Exception as e:
                 print(f"Ollama extraction failed: {e}")
                 return None

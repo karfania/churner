@@ -6,6 +6,7 @@ import { Hero } from "@/components/home/Hero";
 import { Filters } from "@/components/home/Filters";
 import { PromotionList } from "@/components/home/PromotionList";
 import { usePromotions } from "@/hooks/usePromotions";
+import { Loader2 } from "lucide-react";
 
 export default function Home() {
   const {
@@ -20,6 +21,8 @@ export default function Home() {
     changeSubreddit,
     useLlm,
     toggleLlm,
+    findDeals,
+    status,
   } = usePromotions();
 
   const [activeFilter, setActiveFilter] = useState("All Deals");
@@ -49,13 +52,23 @@ export default function Home() {
           onFilterChange={setActiveFilter}
           useLlm={useLlm}
           onToggleLlm={toggleLlm}
+          onFindDeals={() => findDeals({ page: 1, source, subreddit, useLlm })}
         />
+
+        {status && (
+          <div className="max-w-5xl mx-auto px-6 py-4">
+            <div className="flex items-center gap-3 bg-white rounded-xl p-3 shadow-sm border border-gray-100 max-w-2xl">
+              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+              <span className="text-sm text-gray-700">{status}</span>
+            </div>
+          </div>
+        )}
 
         <PromotionList
           promotions={filteredPromotions}
           loading={loading}
           hasMore={hasMore}
-          onLoadMore={() => setPage(page + 1)}
+          onLoadMore={() => findDeals({ page: page + 1, source, subreddit, useLlm })}
         />
       </main>
     </div>

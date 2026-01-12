@@ -13,6 +13,7 @@ from app.models.domain import Promotion, OfferType
 from app.db.repository import save_promotions, get_promotions_from_db
 from app.services.scorer import Scorer
 from app.services.llm import OllamaService
+from app.services.cache import SimpleCache
 
 USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15',
@@ -29,6 +30,7 @@ class Scraper:
     def __init__(self):
         self.cache_duration = timedelta(hours=1)
         self.llm = OllamaService()
+        self._cache = SimpleCache()
 
     def _get_random_context_args(self):
         user_agent = random.choice(USER_AGENTS)
@@ -95,37 +97,96 @@ class Scraper:
             return None
 
     async def get_promotions(self, page: int = 1, limit: int = 10, source: str = "reddit", subreddit: Optional[str] = None, use_llm: bool = False) -> dict:
-        # 1. Try to load from DB
+        # Compose cache key
+        cache_key = f"promos:{source}:{subreddit or ''}:{use_llm}:{page}:{limit}"
+
+        # 1. Try cache first
+        cached = self._cache.get(cache_key)
+        if cached:
+            return cached
+
+        # 2. Try to load from DB
         result = get_promotions_from_db(page, limit, source, subreddit)
-        
-        # 2. If DB is empty for this source, scrape new data
-        if result["total"] == 0:
-            print(f"Database empty for {source}/{subreddit}, scraping... (LLM: {use_llm})")
-            raw_deals = []
-            
-            if source == "reddit":
-                # Default to bankbonuses if not specified
-                target_sub = subreddit if subreddit else "bankbonuses"
-                raw_deals = await self.scrape_reddit(target_sub, use_llm)
-            elif source == "bankrate":
-                raw_deals = await self.scrape_bankrate(use_llm)
-            elif source == "doc":
-                raw_deals = await self.scrape_doc(use_llm)
-            elif source == "nerdwallet":
-                raw_deals = await self.scrape_nerdwallet(use_llm)
-            elif source == "wallethub":
-                raw_deals = await self.scrape_wallethub(use_llm)
-            elif source == "google":
-                raw_deals = await self.scrape_google(use_llm)
-            
-            # Score the deals BEFORE saving so we can sort by score in DB
-            scored_deals = [Scorer.calculate_score(deal) for deal in raw_deals]
-            
-            save_promotions(scored_deals)
-            
-            # Fetch again from DB
-            result = get_promotions_from_db(page, limit, source, subreddit)
-        
+
+        # If DB has data, cache and return
+        if result["total"] > 0:
+            self._cache.set(cache_key, result, ttl=int(self.cache_duration.total_seconds()))
+            return result
+
+        # 3. No cached or DB results — perform prioritized scraping
+        print(f"No DB/cache for {source}/{subreddit}, running prioritized scraping... (LLM: {use_llm})")
+
+        async def scrape_source(src: str):
+            try:
+                if src == "reddit":
+                    target_sub = subreddit if subreddit else "bankbonuses"
+                    return await self.scrape_reddit(target_sub, use_llm)
+                elif src == "bankrate":
+                    return await self.scrape_bankrate(use_llm)
+                elif src == "doc":
+                    return await self.scrape_doc(use_llm)
+                elif src == "nerdwallet":
+                    return await self.scrape_nerdwallet(use_llm)
+                elif src == "wallethub":
+                    return await self.scrape_wallethub(use_llm)
+                elif src == "google":
+                    return await self.scrape_google(use_llm)
+            except Exception as e:
+                print(f"Error scraping {src}: {e}")
+            return []
+
+        # List of sources to fetch in background
+        all_sources = ["reddit", "bankrate", "doc", "nerdwallet", "wallethub", "google"]
+
+        # Ensure prioritized source is scraped first and awaited so user sees fast results
+        prioritized = source if source in all_sources else "reddit"
+        prioritized_deals = await scrape_source(prioritized)
+
+        # Score and save prioritized results so they are immediately queryable
+        scored = [Scorer.calculate_score(d) for d in prioritized_deals]
+        if scored:
+            save_promotions(scored)
+
+        # Build response from DB (may include prioritized results)
+        result = get_promotions_from_db(page, limit, source, subreddit)
+
+        # Cache the immediate result
+        self._cache.set(cache_key, result, ttl=int(self.cache_duration.total_seconds()))
+
+        # Kick off other sources in background
+        async def background_fetch_and_save():
+            tasks = []
+            for s in all_sources:
+                if s == prioritized:
+                    continue
+                tasks.append(asyncio.create_task(scrape_source(s)))
+
+            if not tasks:
+                return
+
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+            for t in done:
+                try:
+                    raw = t.result()
+                    if raw:
+                        scored_more = [Scorer.calculate_score(d) for d in raw]
+                        save_promotions(scored_more)
+                except Exception as e:
+                    print(f"Background task error: {e}")
+
+            # Invalidate relevant caches so subsequent queries see new data
+            try:
+                self._cache.invalidate(cache_key)
+            except Exception:
+                pass
+
+        # Fire-and-forget background fetch
+        try:
+            asyncio.create_task(background_fetch_and_save())
+        except Exception:
+            # Some runtimes may not allow create_task; run it without awaiting if needed
+            pass
+
         return result
 
     async def scrape_reddit_comments(self, context, url: str, use_llm: bool = False) -> List[Promotion]:
