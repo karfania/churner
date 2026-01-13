@@ -23,6 +23,7 @@ export default function Home() {
     toggleLlm,
     findDeals,
     status,
+    cooldown,
   } = usePromotions();
 
   const [activeFilter, setActiveFilter] = useState("All Deals");
@@ -52,12 +53,14 @@ export default function Home() {
           onFilterChange={setActiveFilter}
           useLlm={useLlm}
           onToggleLlm={toggleLlm}
+          loading={loading}
+          cooldown={cooldown}
           onFindDeals={() => findDeals({ page: 1, source, subreddit, useLlm })}
         />
 
         {status && (
-          <div className="max-w-5xl mx-auto px-6 py-4">
-            <div className="flex items-center gap-3 bg-white rounded-xl p-3 shadow-sm border border-gray-100 max-w-2xl">
+          <div className="max-w-5xl mx-auto px-6 py-4 flex justify-center">
+            <div className="flex items-center justify-center gap-3 bg-white rounded-xl p-3 shadow-sm border border-gray-100 max-w-2xl w-full">
               <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
               <span className="text-sm text-gray-700">{status}</span>
             </div>

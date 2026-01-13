@@ -11,6 +11,8 @@ interface FiltersProps {
   useLlm: boolean;
   onToggleLlm: () => void;
   onFindDeals?: () => void;
+  loading?: boolean;
+  cooldown?: boolean;
 }
 
 export function Filters({
@@ -23,6 +25,8 @@ export function Filters({
   useLlm,
   onToggleLlm,
   onFindDeals,
+  loading,
+  cooldown,
 }: FiltersProps) {
   return (
     <div className="space-y-8 mb-12">
@@ -88,9 +92,15 @@ export function Filters({
         <div className="ml-2">
           <button
             onClick={() => onFindDeals && onFindDeals()}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium shadow-sm hover:bg-blue-700"
+             disabled={loading || cooldown}
+             className={cn(
+               "px-4 py-2 rounded-lg text-sm font-medium shadow-sm transition-colors",
+               loading || cooldown 
+                 ? "bg-gray-400 text-white cursor-not-allowed" 
+                 : "bg-blue-600 text-white hover:bg-blue-700"
+             )}
           >
-            Find deals
+            {loading ? "Searching..." : cooldown ? "Wait..." : "Find deals"}
           </button>
         </div>
       </div>

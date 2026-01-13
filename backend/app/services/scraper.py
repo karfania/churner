@@ -46,23 +46,117 @@ class Scraper:
         return context_args
 
     def _heuristic_parse(self, text: str, url: str) -> dict:
-        # Basic regex extraction fallback
+        from urllib.parse import urlparse
+        
+        text_lower = text.lower()
+        
+        # 1. Bonus Amount
         bonus_amount = 0.0
-        match = re.search(r"\$([\d,]+)", text)
-        if match:
-            bonus_amount = float(match.group(1).replace(",", ""))
+        candidates = []
+        
+        # Context-aware search first ("bonus $300", "get $200")
+        context_matches = re.finditer(r"(?:bonus|get|earn|offer|receive)\s*(?:up to)?\s*\$?([\d,]+)", text_lower)
+        for m in context_matches:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if 50 <= val <= 5000:
+                    candidates.append(val)
+            except: pass
+            
+        # Fallback to any valid dollar amount
+        if not candidates:
+            all_matches = re.findall(r"\$([\d,]+)", text)
+            for m in all_matches:
+                try:
+                    val = float(m.replace(",", ""))
+                    if 50 <= val <= 5000:
+                        candidates.append(val)
+                except: pass
+        
+        if candidates:
+            bonus_amount = max(candidates)
+
+        # 2. Offer Type
+        offer_type = OfferType.CHECKING
+        if "savings" in text_lower:
+            offer_type = OfferType.SAVINGS
+        elif "business" in text_lower:
+            offer_type = OfferType.BUSINESS
+        
+        # 3. Minimum Deposit / Balance
+        min_deposit = 0.0
+        # "deposit $XXX", "balance $XXX", "maintaining $XXX"
+        dep_match = re.search(r"(?:deposit|balance|maintaining)\s*(?:of)?\s*\$?([\d,]+)", text_lower)
+        if dep_match:
+            try:
+                min_deposit = float(dep_match.group(1).replace(",", ""))
+            except: pass
+
+        # 4. Direct Deposit
+        direct_deposit_required = False
+        direct_deposit_amount = 0.0
+        if "direct deposit" in text_lower or " dd " in text_lower:
+            direct_deposit_required = True
+            # Try to find amount: "direct deposit of $XXX" or "$XXX direct deposit"
+            dd_amount_match = re.search(r"(?:direct deposit|dd)\s*(?:of)?\s*(?:totaling|total|more)?\s*\$?([\d,]+)", text_lower)
+            if not dd_amount_match:
+                 dd_amount_match = re.search(r"\$?([\d,]+)\s*(?:in)?\s*(?:direct deposit|dd)", text_lower)
+            
+            if dd_amount_match:
+                try:
+                    direct_deposit_amount = float(dd_amount_match.group(1).replace(",", ""))
+                except: pass
+
+        # 5. Holding Period (Days)
+        holding_period_days = 0
+        days_match = re.search(r"(\d+)\s*days?", text_lower)
+        if days_match:
+            try:
+                holding_period_days = int(days_match.group(1))
+            except: pass
+        else:
+            months_match = re.search(r"(\d+)\s*months?", text_lower)
+            if months_match:
+                try:
+                    holding_period_days = int(months_match.group(1)) * 30
+                except: pass
+                
+        # 6. Monthly Fees
+        monthly_fees = 0.0
+        fee_match = re.search(r"(?:monthly|service)\s*fee\s*(?:of)?\s*\$?([\d,]+)", text_lower)
+        if fee_match:
+            try:
+                monthly_fees = float(fee_match.group(1).replace(",", ""))
+            except: pass
+
+        # 7. Bank Name (Heuristic)
+        bank_name = "Unknown (Heuristic)"
+        try:
+            parsed = urlparse(url)
+            domain_parts = parsed.netloc.split('.')
+            if len(domain_parts) >= 2:
+                # e.g. www.chase.com -> chase, promo.citi.com -> citi
+                name_candidate = domain_parts[-2]
+                if name_candidate in ['reddit', 'google', 'doctorofcredit', 'bankrate', 'nerdwallet', 'wallethub']:
+                    # For aggregators, try to guess from the first few words of title
+                    first_words = text.split()[:3]
+                    if first_words and first_words[0][0].isupper() and first_words[0].lower() not in ["get", "new", "earn", "the", "bonus", "best"]:
+                         bank_name = first_words[0]
+                else:
+                    bank_name = name_candidate.capitalize()
+        except: pass
         
         return {
-            "bank_name": "Unknown (Heuristic)",
-            "offer_type": OfferType.CHECKING,
+            "bank_name": bank_name,
+            "offer_type": offer_type,
             "bonus_amount": bonus_amount,
-            "description": text[:200],
-            "min_deposit": 0.0,
-            "min_balance": 0.0,
-            "monthly_fees": 0.0,
-            "direct_deposit_required": False,
-            "direct_deposit_amount": 0.0,
-            "holding_period_days": 0
+            "description": text[:500],
+            "min_deposit": min_deposit,
+            "min_balance": min_deposit, 
+            "monthly_fees": monthly_fees,
+            "direct_deposit_required": direct_deposit_required,
+            "direct_deposit_amount": direct_deposit_amount,
+            "holding_period_days": holding_period_days
         }
 
     async def _process_deal(self, text: str, url: str, source: str, use_llm: bool, subreddit: Optional[str] = None, description_fallback: str = None, created_at: Optional[str] = None) -> Optional[Promotion]:
@@ -254,22 +348,47 @@ class Scraper:
                 context = await browser.new_context(**context_args)
                 page = await context.new_page()
                 await page.goto("https://www.bankrate.com/banking/best-bank-account-bonuses/", timeout=60000)
-                await page.wait_for_selector(".BankDetail-overview", timeout=10000)
-                overviews = await page.query_selector_all(".BankDetail-overview")
                 
-                for overview in overviews:
+                # Wait for the main container
+                try:
+                    await page.wait_for_selector(".BankDetail", timeout=10000)
+                except:
+                    # Alternative selector or page structure check if needed
+                    pass
+
+                # Select all parent containers
+                details = await page.query_selector_all(".BankDetail")
+                
+                for detail in details:
                     try:
-                        text_content = await overview.inner_text()
-                        
-                        description = text_content.strip()
-                        stats_handle = await overview.evaluate_handle("el => el.nextElementSibling")
+                        # 1. Get Title (Bank Name)
+                        bank_name = "Unknown Bank"
+                        title_el = await detail.query_selector(".BankDetail-title")
+                        if title_el:
+                            title_text = await title_el.inner_text()
+                            if ":" in title_text:
+                                bank_name = title_text.split(":")[0].strip()
+                            else:
+                                bank_name = title_text.strip()
+
+                        # 2. Get Overview (Description)
+                        description = ""
+                        overview_el = await detail.query_selector(".BankDetail-overview")
+                        if overview_el:
+                            text_content = await overview_el.inner_text()
+                            description = text_content.strip()
+                        else:
+                            # If no overview, skip or continue? Let's check if we have enough info.
+                            # Sometimes structure might vary. 
+                            continue
+
+                        # 3. Get Stats
                         stats_text = ""
-                        if stats_handle:
-                            is_stats = await stats_handle.evaluate("el => el.classList.contains('BankDetail-productStats')")
-                            if is_stats:
-                                stats_text = await stats_handle.inner_text()
+                        stats_el = await detail.query_selector(".BankDetail-productStats")
+                        if stats_el:
+                            stats_text = await stats_el.inner_text()
                         
-                        full_text = description + "\n" + stats_text
+                        full_text = f"{bank_name}: {description}\n{stats_text}"
                         
                         deal = await self._process_deal(
                             text=full_text,
@@ -278,6 +397,10 @@ class Scraper:
                             use_llm=use_llm,
                             description_fallback=description[:200]
                         )
+                        
+                        # Override bank name if heuristic didn't catch it well
+                        if deal and deal.bank_name in ["Unknown (Heuristic)", "Overview"] and not use_llm:
+                            deal.bank_name = bank_name
 
                         if deal:
                             deals.append(deal)

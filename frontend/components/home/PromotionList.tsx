@@ -11,14 +11,6 @@ interface PromotionListProps {
 }
 
 export function PromotionList({ promotions, loading, hasMore, onLoadMore }: PromotionListProps) {
-  if (loading && promotions.length === 0) {
-    return (
-      <div className="flex justify-center py-20">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
